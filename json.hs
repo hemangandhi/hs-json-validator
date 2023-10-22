@@ -41,12 +41,14 @@ showIndent s i (JsonObject  x) = (getIndentationString s i) ++ "{\n"
 
 instance Show Json where show = showIndent False 0
 
-splitAtPred :: a => (a -> Bool) -> [a] -> [[a]]
+
+splitAtPred :: (a -> Bool) -> [a] -> [[a]]
 splitAtPred = accHelper []
-where accHelper acc pred []     = [acc]
-      accHelper acc pred (x:xs)
-                    | pred x    = [acc] ++ accHelper [] pred xs
-                    | otherwise = accHelper (acc ++ x) pred xs
+    where accHelper []  pred []     = []
+          accHelper acc pred []     = [acc]
+          accHelper acc pred (x:xs)
+                        | pred x    = [acc] ++ accHelper [] pred xs
+                        | otherwise = accHelper (acc ++ [x]) pred xs
 
 isNumeric :: String -> Bool
 isNumeric str = and [all (\x -> or [(Data.Char.isDigit x), (x == '.')]) str,
