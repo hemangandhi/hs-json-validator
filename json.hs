@@ -1,4 +1,3 @@
-
 module Json where
 
 import qualified Data.Map
@@ -58,10 +57,47 @@ tryReadNum :: String -> Maybe Double
 tryReadNum nat | isNumeric nat = Just $ read nat
                | otherwise     = Nothing
 
-data JsonParseError = JsonNumberParseError
+tryReadBool :: String -> Maybe Bool
+tryReadBool "True"  = Just True
+tryReadBool "False" = Just False
+tryReadBool x       = Nothing
+
+data JsonParseError = NumberParseError
                     | BooleanParseError
+                    | UnclosedStringError
                     | ArrayParseError JsonParseError
                     | ObjectParseError String JsonParseError
                     | ConfusingDelimiter Char
+
+instance Show JsonParseError where
+    show NumberParseError       = "Issue parsing a number"
+    show BooleanParseError      = "Issue parsing a boolean"
+    show UnclosedStringError    = "Issue: likely a string that isn't closed"
+    show (ArrayParseError x)    = "In parsing array: " ++ (show x)
+    show (ObjectParseError k x) = "In parsing object, at key: " ++ k ++ ", got error: " ++ (show x)
+    show (ConfusingDelimiter t) = "Confused about delimiter: " ++ [t]
+
+data TokenizeState = Start | InStr | Backslash
+
+tokenizeJsonStr :: String -> Either JsonParseError [String]
+tokenizeJsonStr = tokenizeState Start ""
+    where tokenizeState Start     acc ('"':s)  = (tokenizeState InStr "" s) >>= (return . (acc :))
+          tokenizeState Start     acc (':':s)  = (tokenizeState Start "" s) >>= (return . (acc :))
+          tokenizeState Start     acc (',':s)  = (tokenizeState Start "" s) >>= (return . (acc :))
+          tokenizeState Start     acc ('{':s)  = (tokenizeState Start "" s) >>= (return . (acc :))
+          tokenizeState Start     acc ('}':s)  = (tokenizeState Start "" s) >>= (return . (acc :))
+          tokenizeState Start     acc ('[':s)  = (tokenizeState Start "" s) >>= (return . (acc :))
+          tokenizeState Start     acc (']':s)  = (tokenizeState Start "" s) >>= (return . (acc :))
+          tokenizeState Start     acc (c:s)
+                         | Data.Char.isSpace c = (tokenizeState Start "" s) >>= (return . (acc :))
+                         | otherwise           = tokenizeState Start (acc ++ [c]) s
+          tokenizeState Start     ""  ""       = Right []
+          tokenizeState Start     acc ""       = Right (acc:[])
+          tokenizeState InStr     acc ('"':s)  = (tokenizeState Start "" s) >>= (return . (acc :))
+          tokenizeState InStr     acc ('\\':s) = tokenizeState Backslash (acc ++ "\\") s
+          tokenizeState InStr     acc (c:s)    = tokenizeState InStr (acc ++ [c]) s
+          tokenizeState InStr     acc ""       = Left UnclosedStringError
+          tokenizeState Backslash acc (c:s)    = tokenizeState InStr (acc ++ [c]) s
+          tokenizeState Backslash acc ""       = Left UnclosedStringError
 
 
