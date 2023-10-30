@@ -16,28 +16,23 @@ getIndentationString True  x = (replicate x ' ')
 getIndentationString False _ = ""
 
 showIndent :: Bool -> Int -> Json -> String
-showIndent s i (JsonString  x) = (getIndentationString s i) ++ "\"" ++ (show x) ++ "\""
+showIndent s i (JsonString  x) = (getIndentationString s i) ++ "\"" ++ x ++ "\""
 showIndent s i (JsonNumber  x) = (getIndentationString s i) ++ show x
-showIndent s i (JsonBoolean x) = (getIndentationString s i) ++ show x
+showIndent s i (JsonBoolean x) = (getIndentationString s i) ++ (map Data.Char.toLower $ show x)
 showIndent s i (JsonArray   x) = (getIndentationString s i) ++ "[\n"
                                                             ++ (unlines  -- want trailing \n
                                                                    $ map (\x -> (showIndent True (i + 4) x) ++ ",") x)
+                                                            ++ (getIndentationString True i)
                                                             ++ "]"
-showIndent s i (JsonObject  x) = (getIndentationString s i) ++ "{\n"
-                                                            ++ (Data.Map.foldrWithKey (getMapStr s (i + 4)) "" x)
-                                                            ++ "\n}"
-    where getMapStr s i k (JsonArray x)  acc = acc ++ "\n"
-                                                   ++ (getIndentationString s i)
-                                                   ++ "\"" ++ k ++ "\": "
-                                                   ++ (showIndent True (i + 4) (JsonArray x))
-          getMapStr s i k (JsonObject x) acc = acc ++ "\n"
-                                                   ++ (getIndentationString s i)
-                                                   ++ "\"" ++ k ++ "\": "
-                                                   ++ (showIndent True (i + 4) (JsonObject x))
-          getMapStr s i k x              acc = acc ++ "\n"
-                                                   ++ (getIndentationString s i)
-                                                   ++ "\"" ++ k ++ "\": "
-                                                   ++ (showIndent False (i + 4) x)
+showIndent s i (JsonObject  x) = (getIndentationString s i) ++ "{"
+                                                            ++ (Data.Map.foldrWithKey (getMapStr (i + 4)) "" x)
+                                                            ++ "\n"
+                                                            ++ (getIndentationString True i)
+                                                            ++ "}"
+    where getMapStr i k x acc = acc ++ "\n"
+                                    ++ (getIndentationString True i)
+                                    ++ "\"" ++ k ++ "\": "
+                                    ++ (showIndent False (i + 4) x)
 
 instance Show Json where show = showIndent False 0
 
@@ -53,17 +48,18 @@ splitAtPred = accHelper []
 -- TODO: Replace with readMaybe
 isNumeric :: String -> Bool
 isNumeric str = and [all (\x -> or [(Data.Char.isDigit x), (x == '.')]) str,
-                     (length $ filter (== '.') str) == 1]
+                     (length $ filter (== '.') str) <= 1]
 
 tryReadNum :: String -> Maybe Double
 tryReadNum nat | isNumeric nat = Just $ read nat
                | otherwise     = Nothing
 
 tryReadBool :: String -> Maybe Bool
-tryReadBool "True"  = Just True
-tryReadBool "False" = Just False
+tryReadBool "true"  = Just True
+tryReadBool "false" = Just False
 tryReadBool x       = Nothing
 
+-- TODO: replace with just the pathing and "unexpected token" (need instance Show JsonToken).
 data JsonParseError = LiteralParseError
                     | UnclosedStringError
                     | ArrayParseError JsonParseError
@@ -87,22 +83,25 @@ data JsonToken = OpenObject
                | Literal String
                | CloseObject
                | CloseArray
+               deriving Show
 
 tokenizeJsonStr :: String -> Either JsonParseError [JsonToken]
 tokenizeJsonStr = tokenizeState Start ""
-    where tokenizeState Start     acc ('"':s)  = (tokenizeState InStr "" s) >>= (return . ((Literal acc) :))
-          tokenizeState Start     acc (':':s)  = (tokenizeState Start "" s) >>= (return . ([Literal acc, Colon] ++))
-          tokenizeState Start     acc (',':s)  = (tokenizeState Start "" s) >>= (return . ([Literal acc, Comma] ++))
-          tokenizeState Start     acc ('{':s)  = (tokenizeState Start "" s)
-                                                 >>= (return . ([Literal acc, OpenObject] ++))
-          tokenizeState Start     acc ('}':s)  = (tokenizeState Start "" s)
-                                                 >>= (return . ([Literal acc, CloseObject] ++))
-          tokenizeState Start     acc ('[':s)  = (tokenizeState Start "" s)
-                                                 >>= (return . ([Literal acc, OpenArray] ++))
-          tokenizeState Start     acc (']':s)  = (tokenizeState Start "" s)
-                                                 >>= (return . ([Literal acc, CloseArray] ++))
+    where tokenizeState Start     acc ('"':s)  = (tokenizeState InStr "" s) >>= (maybePrependAcc acc)
+          tokenizeState Start     acc (':':s)  = (tokenizeState Start "" s) >>= (return . (Colon :))
+                                                                            >>= (maybePrependAcc acc)
+          tokenizeState Start     acc (',':s)  = (tokenizeState Start "" s) >>= (return . (Comma :))
+                                                                            >>= (maybePrependAcc acc)
+          tokenizeState Start     acc ('{':s)  = (tokenizeState Start "" s) >>= (return . (OpenObject :))
+                                                                            >>= (maybePrependAcc acc)
+          tokenizeState Start     acc ('}':s)  = (tokenizeState Start "" s) >>= (return . (CloseObject :))
+                                                                            >>= (maybePrependAcc acc)
+          tokenizeState Start     acc ('[':s)  = (tokenizeState Start "" s) >>= (return . (OpenArray :))
+                                                                            >>= (maybePrependAcc acc)
+          tokenizeState Start     acc (']':s)  = (tokenizeState Start "" s) >>= (return . (CloseArray :))
+                                                                            >>= (maybePrependAcc acc)
           tokenizeState Start     acc (c:s)
-                         | Data.Char.isSpace c = (tokenizeState Start "" s) >>= (return . ((Literal acc) :))
+                         | Data.Char.isSpace c = (tokenizeState Start "" s) >>= (maybePrependAcc acc)
                          | otherwise           = tokenizeState Start (acc ++ [c]) s
           tokenizeState Start     ""  ""       = Right []
           tokenizeState Start     acc ""       = Right ((Literal acc):[])
@@ -112,6 +111,8 @@ tokenizeJsonStr = tokenizeState Start ""
           tokenizeState InStr     acc ""       = Left UnclosedStringError
           tokenizeState Backslash acc (c:s)    = tokenizeState InStr (acc ++ [c]) s
           tokenizeState Backslash acc ""       = Left UnclosedStringError
+          maybePrependAcc ""  = return
+          maybePrependAcc acc = return . ((Literal acc) :)
 
 parseArray :: ([JsonToken] -> Json -> Either JsonParseError Json) -> [Json]
                                                                   -> [JsonToken] -> Either JsonParseError Json
@@ -148,4 +149,6 @@ parseJsonTokens ts = parseWithContinuation ts expectEmpty
           expectEmpty ts j = Left LiteralParseError
 
 -- TODO: find the appropriate dataclass for this.
+tryReadJson :: String -> Either JsonParseError Json
 tryReadJson s = tokenizeJsonStr s >>= parseJsonTokens
+
