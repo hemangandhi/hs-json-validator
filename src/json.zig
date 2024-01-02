@@ -346,4 +346,4 @@ const AllocatedJsonValue = struct {
     }
 };
 
-test {}
+test "parses doubles" {}
