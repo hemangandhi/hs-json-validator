@@ -1,5 +1,10 @@
 const std = @import("std");
 
+fn getLast(comptime T: type, a: *std.ArrayList(T)) ?*T {
+    if (a.items.len == 0) return null;
+    return &a.items[a.items.len - 1];
+}
+
 // TODO: consider https://zig.news/ityonemo/error-payloads-updated-367m
 const JsonParseError = error{ LiteralParseError, UnclosedStringError, ArrayParseError, ObjectParseError, ConfusingDelimiter, ExpectedMore };
 
@@ -13,7 +18,7 @@ const JsonTypeTag = enum {
 
     // Classify the expected type based on a single character.
     pub fn classifyByFirstChar(char: u8) ?JsonTypeTag {
-        switch (char) {
+        return switch (char) {
             '{' => JsonTypeTag.object,
             '[' => JsonTypeTag.array,
             '"' => JsonTypeTag.string,
@@ -23,7 +28,7 @@ const JsonTypeTag = enum {
             'f' => JsonTypeTag.boolean,
             'n' => JsonTypeTag.jsonNull,
             else => null,
-        }
+        };
     }
 };
 
@@ -39,7 +44,7 @@ const JsonParseState = struct {
     // Stack: all the arrays we're traversing into.
     arrayStack: std.ArrayList(*std.ArrayList(JsonValue)),
     // Allocator for the stack and the outputted JsonValue.
-    allocator: *std.mem.Allocator,
+    allocator: std.mem.Allocator,
     // Points into string.
     index: usize,
     // Unowned.
@@ -48,12 +53,12 @@ const JsonParseState = struct {
     stringTable: *std.ArrayList(std.ArrayList(u8)),
     subItemTable: *std.ArrayList(std.ArrayList(JsonValue)),
 
-    fn init(allocator: *std.mem.Allocator, string: []const u8, top_value: JsonValue, stringTable: *std.ArrayList(std.ArrayList(u8)), subItemTable: *std.ArrayList(std.ArrayList(JsonValue))) std.mem.Allocator.Error!JsonParseState {
+    fn init(allocator: std.mem.Allocator, string: []const u8, top_value: *JsonValue, stringTable: *std.ArrayList(std.ArrayList(u8)), subItemTable: *std.ArrayList(std.ArrayList(JsonValue))) std.mem.Allocator.Error!JsonParseState {
         var tags = std.ArrayList(JsonParseStateTag).init(allocator);
-        try tags.append(JsonParseState.top);
+        try tags.append(JsonParseStateTag.top);
         var values = std.ArrayList(*JsonValue).init(allocator);
-        try values.append(&top_value);
-        return JsonParseState{ .tags = tags, .values = values, .arrayStack = std.ArrayList(*std.ArrayList(JsonValue)).init(), .allocator = allocator, .start = 0, .end = 0, .index = 0, .string = string, .stringTable = stringTable, .subItemTable = subItemTable };
+        try values.append(top_value);
+        return JsonParseState{ .tags = tags, .values = values, .arrayStack = std.ArrayList(*std.ArrayList(JsonValue)).init(allocator), .allocator = allocator, .index = 0, .string = string, .stringTable = stringTable, .subItemTable = subItemTable };
     }
 
     fn deinit(self: *JsonParseState) void {
@@ -80,14 +85,14 @@ const JsonParseState = struct {
             return JsonParseError.UnclosedStringError;
         }
         self.index += 1;
-        const found_string = if (start_index + 1 >= self.index - 2) {
-            "";
-        } else {
+        const found_string = if (start_index + 1 >= self.index - 2)
+            ""
+        else
             self.string[start_index + 1 .. self.index - 2];
-        };
+        ;
         try self.stringTable.append(std.ArrayList(u8).init(self.allocator));
-        try self.stringTable.getLast().insertSlice(0, found_string);
-        return self.stringTable.getLast().items;
+        try getLast(std.ArrayList(u8), self.stringTable).?.insertSlice(0, found_string);
+        return getLast(std.ArrayList(u8), self.stringTable).?.items;
     }
 
     fn consumeDouble(self: *JsonParseState) JsonParseError!void {
@@ -191,109 +196,105 @@ const JsonParseState = struct {
         if (exponent) |e| {
             acc *= std.map.pow(f64, 10.0, e);
         }
-        self.values.getLast().double = acc;
+        getLast(*JsonValue, &self.values).?.double = acc;
     }
 
     fn advanceOnce(self: *JsonParseState) (JsonParseError || std.mem.Allocator.Error)!void {
         const char = self.string[self.index];
-        switch (self.tags.getLast()) {
+        switch (getLast(JsonParseStateTag, &self.tags).?.*) {
             JsonParseStateTag.top => {
                 const typeTag = JsonTypeTag.classifyByFirstChar(char);
-                if (!typeTag) return JsonParseError.ConfusingDelimiter;
-                self.start = self.index;
+                if (typeTag == null) return JsonParseError.ConfusingDelimiter;
                 switch (typeTag.?) {
                     JsonTypeTag.string => {
-                        self.values.getLast().string = try self.consumeString();
-                        self.tags.pop();
+                        getLast(*JsonValue, &self.values).?.*.string = try self.consumeString();
+                        _ = self.tags.pop();
                     },
                     JsonTypeTag.double => {
                         try self.consumeDouble();
-                        self.tags.pop();
+                        _ = self.tags.pop();
                     },
                     JsonTypeTag.boolean => {
                         if (char == 't') {
                             try self.consumeLiteralString("true");
-                            self.values.getLast().boolean = true;
+                            getLast(*JsonValue, &self.values).?.*.boolean = true;
                         } else {
                             try self.consumeLiteralString("false");
-                            self.values.getLast().boolean = false;
+                            getLast(*JsonValue, self.values).?.*.boolean = false;
                         }
-                        self.tags.pop();
+                        _ = self.tags.pop();
                     },
                     JsonTypeTag.jsonNull => {
                         try self.consumeLiteralString("null");
-                        self.tags.pop();
+                        _ = self.tags.pop();
                     },
                     JsonTypeTag.array => {
                         self.tags.items[self.tags.items.len - 1] = JsonParseStateTag.arrayDelimiter;
                         try self.tags.append(JsonParseStateTag.top);
-                        self.values.getLast().array.init(self.allocator);
-                        try self.values.getLast().array.append(JsonValue{.jsonNull});
-                        try self.values.append(&self.values.getLast().array.getLast());
+                        getLast(*JsonValue, self.values).?.*.array.init(self.allocator);
+                        try getLast(*JsonValue, self.values).?.*.array.append(JsonValue{ .jsonNull = {} });
+                        try self.values.append(getLast(*JsonValue, &getLast(*JsonValue, self.values).?.*.array));
                         try self.subItemTable.append(std.ArrayList(JsonValue).init());
-                        try self.arrayStack.append(&self.subItemTable.getLast());
+                        try self.arrayStack.append(getLast(std.ArrayList(JsonValue), &self.subItemTable).?);
                     },
                     JsonTypeTag.object => {
                         self.tags.items[self.tags.items.len - 1] = JsonParseStateTag.objectKey;
                         try self.tags.append(JsonParseStateTag.top);
-                        self.values.getLast().object.init(self.allocator);
+                        getLast(*JsonValue, self.values).?.*.object.init(self.allocator);
                         const str = try self.consumeString();
                         try self.subItemTable.append(std.ArrayList(JsonValue).init());
-                        try self.subItemTable.getLast().append(JsonValue{ .jsonNull = {} });
-                        try self.values.getLast().object.put(str, &self.subItemTable.getLast().getLast());
-                        try self.values.append(&self.values.getLast().object.getPtr(str).?);
+                        try getLast(std.ArrayList(JsonValue), self.subItemTable).?.append(JsonValue{ .jsonNull = {} });
+                        try getLast(*JsonValue, self.values).?.object.put(str, getLast(JsonValue, getLast(std.ArrayList(JsonValue), self.subItemTable).?));
+                        try self.values.append(&getLast(*JsonValue, self.values).?.*.object.getPtr(str).?);
                         if (self.string[self.index] != ':') {
                             return JsonParseError.ConfusingDelimiter;
                         }
                         self.index += 1;
                     },
-                    else => {
-                        return JsonParseError.ConfusingDelimiter;
-                    },
                 }
             },
-            JsonParseState.arrayDelimiter => {
+            JsonParseStateTag.arrayDelimiter => {
                 switch (char) {
                     ',' => {
                         try self.tags.append(JsonParseStateTag.top);
-                        try self.arrayStack.getLast().append(JsonValue{.jsonNull});
-                        try self.values.append(&self.arrayStack.getLast().getLast());
+                        try getLast(*std.ArrayList(JsonValue), self.arrayStack).?.append(JsonValue{ .jsonNull = {} });
+                        try self.values.append(getLast(JsonValue, getLast(*std.ArrayList(JsonValue), self.arrayStack).?).?);
                     },
                     ']' => {
-                        self.tags.pop();
-                        self.values.pop();
+                        _ = self.tags.pop();
+                        _ = self.values.pop();
                         const lastArray = self.arrayStack.pop();
-                        self.values.getLast().array = lastArray.items;
+                        getLast(*JsonValue, self.values).?.*.array = lastArray.items;
                     },
                     else => {
                         return JsonParseError.ConfusingDelimiter;
                     },
                 }
             },
-            JsonParseState.objectDelimiter => {
+            JsonParseStateTag.objectDelimiter => {
                 switch (char) {
                     ',' => {
                         try self.tags.append(JsonParseStateTag.top);
                         const str = try self.consumeString();
                         try self.subItemTable.append(std.ArrayList(JsonValue).init());
-                        try self.subItemTable.getLast().append(JsonValue{ .jsonNull = {} });
-                        try self.values.getLast().object.put(str, &self.subItemTable.getLast().getLast());
-                        try self.values.append(&self.values.getLast().object.get(str).?);
+                        try getLast(std.ArrayList(JsonValue), self.subItemTable).?.append(JsonValue{ .jsonNull = {} });
+                        try getLast(*JsonValue, self.values).?.*.object.put(str, getLast(JsonValue, getLast(std.ArrayList(JsonValue), self.subItemTable).?).?);
+                        try self.values.append(getLast(*JsonValue, self.values).?.*.object.get(str).?);
                         if (self.string[self.index] != ':') {
                             return JsonParseError.ConfusingDelimiter;
                         }
                         self.index += 1;
                     },
                     '}' => {
-                        self.tags.pop();
-                        self.values.pop();
+                        _ = self.tags.pop();
+                        _ = self.values.pop();
                     },
                     else => {
                         return JsonParseError.ConfusingDelimiter;
                     },
                 }
             },
-        } // close switch on the JsonParseState.
+        } // close switch on the JsonParseStateTag.
     }
 };
 
@@ -315,35 +316,49 @@ const AllocatedJsonValue = struct {
     stringTable: std.ArrayList(std.ArrayList(u8)),
     subItemTable: std.ArrayList(std.ArrayList(JsonValue)),
 
-    // Parse a JSON string
-    pub fn fromString(string: []const u8, allocator: std.mem.Allocator) (JsonParseError || std.mem.Allocator.Error)!AllocatedJsonValue {
-        var new_root = JsonValue{.jsonNull};
-        var state = try JsonParseState.init(allocator, string, new_root);
-        defer state.deinit();
-        while (state.tags.len > 0) {
-            try state.advanceOnce();
-        }
-        return AllocatedJsonValue{ .root = new_root, .allocator = allocator };
-    }
-
-    pub fn deinit(self: *AllocatedJsonValue) void {
-        for (self.subItemTable.items) |item| {
-            switch (item) {
-                .object => |o| {
-                    o.deinit();
-                },
-                else => {},
+    fn deinitFromTables(root: *JsonValue, stringTable: *std.ArrayList(std.ArrayList(u8)), subItemTable: *std.ArrayList(std.ArrayList(JsonValue))) void {
+        for (subItemTable.items) |*list_of_values| {
+            for (list_of_values.items) |*item| {
+                switch (item.*) {
+                    .object => |*o| {
+                        o.deinit();
+                    },
+                    else => {},
+                }
             }
         }
-        switch (self.root) {
-            .object => |o| {
+        switch (root.*) {
+            .object => |*o| {
                 o.deinit();
             },
             else => {},
         }
-        self.stringTable.deinit();
-        self.subItemTable.deinit();
+        stringTable.deinit();
+        subItemTable.deinit();
+    }
+
+    // Parse a JSON string
+    pub fn fromString(string: []const u8, allocator: std.mem.Allocator) (JsonParseError || std.mem.Allocator.Error)!AllocatedJsonValue {
+        var new_root = JsonValue{ .jsonNull = {} };
+        var stringTable = std.ArrayList(std.ArrayList(u8)).init(allocator);
+        var subItemTable = std.ArrayList(std.ArrayList(JsonValue)).init(allocator);
+        errdefer AllocatedJsonValue.deinitFromTables(&new_root, &stringTable, &subItemTable);
+        var state = try JsonParseState.init(allocator, string, &new_root, &stringTable, &subItemTable);
+        defer state.deinit();
+        while (state.tags.items.len > 0) {
+            try state.advanceOnce();
+        }
+        return AllocatedJsonValue{ .root = new_root, .allocator = allocator, .stringTable = stringTable, .subItemTable = subItemTable };
+    }
+
+    pub fn deinit(self: *AllocatedJsonValue) void {
+        AllocatedJsonValue.deinitFromTables(&self.root, &self.stringTable, &self.subItemTable);
     }
 };
 
-test "parses doubles" {}
+test "parses double" {
+    const double_str = "3.1415";
+    var value = try AllocatedJsonValue.fromString(double_str, std.testing.allocator);
+    defer value.deinit();
+    try std.testing.expect(std.math.approxEqAbs(f64, value.root.double, 3.1415, 1e-7));
+}
